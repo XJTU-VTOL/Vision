@@ -14,7 +14,11 @@ from PIL import Image, ExifTags
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
-from utils.utils import xyxy2xywh, xywh2xyxy
+from utils.common_utils import xyxy2xywh, xywh2xyxy
+from torchvision.datasets import CocoDetection
+import random
+from utils.dataset_utils import calculate_corners
+
 
 help_url = 'https://github.com/ultralytics/yolov3/wiki/Train-Custom-Data'
 img_formats = ['.bmp', '.jpg', '.jpeg', '.png', '.tif', '.tiff', '.dng']
@@ -617,33 +621,137 @@ def load_mosaic(self, index):
 
     return img4, labels4
 
+class LoadCOCO(Dataset):
+    def __init__(self, root_path, annfile, hyper, img_size, augment):
+        super(LoadCOCO, self).__init__()
+        self.coco = CocoDetection(root_path, annfile)
+        assert len(self.coco) > 0, 'No images found in %s with annotation file --  %s' % (root_path, annfile)
+        self.img_size = img_size
+        self.augment = augment
+        self.hyp = hyper
+    
+    def __len__(self):
+        return len(self.coco)
 
-def letterbox(img, new_shape=(416, 416), color=(114, 114, 114), auto=True, scaleFill=False, scaleup=True):
+    def __getitem__(self, index):
+        img, labels = self.coco[index]
+        img = np.array(img)
+        h0, w0 = img.shape[:2] # original size
+        coors = np.array([label['bbox'] for label in labels]) # x_left, y_left, width, height  (left_up_corner + width, height)
+        # assert len(coors.shape)==2, 'loaded empty label %d'%(index)
+        img_id = np.array([label['image_id'] for label in labels])
+        cls_id = np.array([label['category_id'] for label in labels], dtype=np.float32) - 1 # convert to 0 ~ 89
+
+        img, ratio, pad = letterbox(img, self.img_size, auto=False, scaleup=self.augment)
+        h, w = img.shape[:2] # current shape
+        shapes = (h0, w0), ((h / h0, w / w0), pad)  # for COCO mAP rescaling
+
+        # convert width, height 
+        labels = coors.copy()
+        nL = len(labels)  # number of labels
+        if len(labels.shape) == 2:
+            # convert to center coordinate
+            labels[:, 0] = ratio[0] * (coors[:, 0] + coors[:, 2] / 2 ) + pad[0]  # pad width
+            labels[:, 1] = ratio[1] * (coors[:, 1] + coors[:, 3] / 2 ) + pad[1]  # pad height
+
+            # scale in current image
+            labels[:, 2] = ratio[0] * coors[:, 2]
+            labels[:, 3] = ratio[0] * coors[:, 3] 
+
+            if self.augment:
+                # convert from (center + w, h) to (x1y1x2y2)
+                diag = xywh2xyxy(labels)
+                diag = np.concatenate([cls_id[:, np.newaxis], diag], axis=1) # (N, cls + xyxy)
+
+                img, diag = random_affine(img, diag,
+                                        degrees=hyp['degrees'],
+                                        translate=hyp['translate'],
+                                        scale=hyp['scale'],
+                                        shear=hyp['shear'])
+                
+                # re-assign the labels
+                labels = xyxy2xywh(diag[:, 1:]) #(N, xywh)
+                cls_id = diag[:, 0]
+
+                # random left-right flip
+                lr_flip = True
+                if lr_flip and random.random() < 0.5:
+                    img = np.fliplr(img)
+                    if nL:
+                        labels[:, 0] = w - labels[:, 0]
+
+                # random up-down flip
+                ud_flip = False
+                if ud_flip and random.random() < 0.5:
+                    img = np.flipud(img)
+                    if nL:
+                        labels[:, 1] = h - labels[:, 1]
+
+            # Normalize coordinates 0 - 1 (For Yolo training)
+            labels[:, [1, 3]] /= img.shape[0]  # height
+            labels[:, [0, 2]] /= img.shape[1]  # width
+            
+            labels[np.where(labels>1.0)] = 1.0
+            labels[np.where(labels<0.0)] = 0.0 
+
+        nL = len(labels)
+        labels_out = torch.zeros((nL, 6))
+        if nL:
+            labels_out[:, 2:] = torch.from_numpy(labels)
+            labels_out[:, 1] = torch.from_numpy(cls_id)
+
+        # Convert
+        img = np.ascontiguousarray(img)
+
+        return torch.from_numpy(img.astype(np.float32)).permute(2, 0, 1), labels_out, img_id, shapes
+
+    @staticmethod
+    def collate_fn(batch):
+        img, label, path, shapes = zip(*batch)  # transposed
+        for i, l in enumerate(label):
+            l[:, 0] = i  # add target image index for build_targets()
+        return torch.stack(img, 0), torch.cat(label, 0), path, shapes
+
+def letterbox(img, new_shape=(416, 416), color=(114,114,114), auto=True, scaleFill=False, scaleup=True):
+    """
+    Resize the img to the given shape (new_shape) and calculate the corresponding ratio and padding value
+
+    Input 
+        img: Input img (after resize, need to pad)
+        new_shape: input shape for the neural network.
+        color: padding color
+
+    Return
+        img: image after resize and paddings
+        ratio: resize ratio (ratio_x, ratio_y)
+        pad: padding (dw, dh)
+    """
     # Resize image to a 32-pixel-multiple rectangle https://github.com/ultralytics/yolov3/issues/232
-    shape = img.shape[:2]  # current shape [height, width]
+    current_shape = img.shape[:2]  # current shape [height, width]
     if isinstance(new_shape, int):
         new_shape = (new_shape, new_shape)
 
     # Scale ratio (new / old)
-    r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
+    r = min(float(new_shape[0]) / current_shape[0], float(new_shape[1]) / current_shape[1])
     if not scaleup:  # only scale down, do not scale up (for better test mAP)
         r = min(r, 1.0)
 
     # Compute padding
     ratio = r, r  # width, height ratios
-    new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
+    new_unpad = int(round(current_shape[1] * r)), int(round(current_shape[0] * r))
     dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]  # wh padding
+
     if auto:  # minimum rectangle
         dw, dh = np.mod(dw, 64), np.mod(dh, 64)  # wh padding
     elif scaleFill:  # stretch
         dw, dh = 0.0, 0.0
         new_unpad = new_shape
-        ratio = new_shape[0] / shape[1], new_shape[1] / shape[0]  # width, height ratios
+        ratio = new_shape[0] / current_shape[1], new_shape[1] / current_shape[0]  # width, height ratios
 
     dw /= 2  # divide padding into 2 sides
     dh /= 2
 
-    if shape[::-1] != new_unpad:  # resize
+    if current_shape[::-1] != new_unpad:  # resize
         img = cv2.resize(img, new_unpad, interpolation=cv2.INTER_LINEAR)
     top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
     left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
@@ -652,6 +760,15 @@ def letterbox(img, new_shape=(416, 416), color=(114, 114, 114), auto=True, scale
 
 
 def random_affine(img, targets=(), degrees=10, translate=.1, scale=.1, shear=10, border=0):
+    """
+    Data augmentation, Random affine the input image
+    input: image: np.ndarray
+           targets: labels in format (cls, x1, y1, x2, y2) (diagonal points of a rectangle)
+    
+    output:
+           image (after warp)
+           targets (after warp) in format (cls, x1, y1, x2, y2)
+    """
     # torchvision.transforms.RandomAffine(degrees=(-10, 10), translate=(.1, .1), scale=(.9, 1.1), shear=(-10, 10))
     # https://medium.com/uruvideo/dataset-augmentation-with-random-homographies-a8f4b44830d4
     # targets = [cls, xyxy]
@@ -662,9 +779,7 @@ def random_affine(img, targets=(), degrees=10, translate=.1, scale=.1, shear=10,
     # Rotation and Scale
     R = np.eye(3)
     a = random.uniform(-degrees, degrees)
-    # a += random.choice([-180, -90, 0, 90])  # add 90deg rotations to small rotations
     s = random.uniform(1 - scale, 1 + scale)
-    # s = 2 ** random.uniform(-scale, scale)
     R[:2] = cv2.getRotationMatrix2D(angle=a, center=(img.shape[1] / 2, img.shape[0] / 2), scale=s)
 
     # Translation
@@ -678,7 +793,7 @@ def random_affine(img, targets=(), degrees=10, translate=.1, scale=.1, shear=10,
     S[1, 0] = math.tan(random.uniform(-shear, shear) * math.pi / 180)  # y shear (deg)
 
     # Combined rotation matrix
-    M = S @ T @ R  # ORDER IS IMPORTANT HERE!!
+    M = S @ T @ R  # Matrix Multiplication & ORDER IS IMPORTANT HERE!!
     if (border != 0) or (M != np.eye(3)).any():  # image changed
         img = cv2.warpAffine(img, M[:2], dsize=(width, height), flags=cv2.INTER_LINEAR, borderValue=(114, 114, 114))
 
@@ -718,6 +833,82 @@ def random_affine(img, targets=(), degrees=10, translate=.1, scale=.1, shear=10,
         targets[:, 1:5] = xy[i]
 
     return img, targets
+
+class KITTI(Dataset):
+    def __init__(self,img_path, label_path, ids = '/data/cxg1/VoxelNet_pro/Data/training/val.txt', transform=None, target_transform=None, transforms=None):
+        super(KITTI, self).__init__()
+        self.ids = ids
+        self.img_path = img_path
+        self.label_path = label_path
+
+        with open(ids, 'r') as f:
+            ids_file = f.readlines()
+        id_num = [int(id_) for id_ in ids_file]
+
+        img_list = sorted(os.listdir(img_path))
+        label_list = sorted(os.listdir(label_path))
+
+        self.img_list = []
+        self.label_list = []
+
+        for num in id_num:
+            self.img_list.append(img_list[num])
+            self.label_list.append(label_list[num])
+
+        self.class2id = {
+            'Car': 2,
+            'Van': 3,
+            'Truck': 4,
+            'Pedestrian': 5,
+            'Person_sitting': 6,
+            'Cyclist': 7,
+            'Tram': 8,
+            'Misc': 1
+        }
+    
+    def __len__(self):
+        return len(self.ids)
+
+    def __getitem__(self, index):
+         #get image and labels
+        img_place = self.img_list[index]
+        label_place = self.label_list[index]
+        img = cv2.imread(os.path.join(self.img_path, img_place))
+        img = np.array(img, dtype = float)
+        label_file = open(os.path.join(self.label_path, label_place), 'r')
+        label = label_file.readlines()
+        labels = []
+        cls_id = []
+        
+        for fields in label: 
+            fields=fields.strip()
+            fields=fields.split(" ")
+            cls_name = fields[0]
+            cls_id.append(self.class2id[cls_name])
+            labels.append(fields[1:])
+        labels = np.array(labels)
+        cls_id = np.array(cls_id)
+        lens = len(labels)
+
+        bbox = np.array(labels[:, [3, 4, 5, 6]])
+        bbox = bbox.astype(np.float64)
+
+        bbox[:, 2] = bbox[:, 2] - bbox[:, 0]
+        bbox[:, 3] = bbox[:, 3] - bbox[:, 1]
+
+
+        targets = []
+
+        for i in range(lens):
+            target = {
+                "bbox": bbox[i],
+                "image_id": img_place,
+                "category_id": cls_id[i]
+
+            }
+            targets.append(target)
+
+        return img, targets
 
 
 def cutout(image, labels):
@@ -843,3 +1034,43 @@ def create_folder(path='./new_folder'):
     if os.path.exists(path):
         shutil.rmtree(path)  # delete output folder
     os.makedirs(path)  # make new output folder
+
+
+hyp = {'giou': 3.54,  # giou loss gain
+       'cls': 37.4,  # cls loss gain
+       'cls_pw': 1.0,  # cls BCELoss positive_weight
+       'obj': 64.3,  # obj loss gain (*=img_size/320 if img_size != 320)
+       'obj_pw': 1.0,  # obj BCELoss positive_weight
+       'iou_t': 0.20,  # iou training threshold
+       'lr0': 0.01,  # initial learning rate (SGD=5E-3, Adam=5E-4)
+       'lrf': 0.0005,  # final learning rate (with cos scheduler)
+       'momentum': 0.937,  # SGD momentum
+       'weight_decay': 0.0005,  # optimizer weight decay
+       'fl_gamma': 0.0,  # focal loss gamma (efficientDet default is gamma=1.5)
+       'hsv_h': 0.0138,  # image HSV-Hue augmentation (fraction)
+       'hsv_s': 0.678,  # image HSV-Saturation augmentation (fraction)
+       'hsv_v': 0.36,  # image HSV-Value augmentation (fraction)
+       'degrees': 1.98 ,  # image rotation (+/- deg)
+       'translate': 0.05 ,  # image translation (+/- fraction)
+       'scale': 0.05 ,  # image scale (+/- gain)
+       'shear': 0.641 }  # image shear (+/- deg)
+
+if __name__=='__main__':
+    train='/data/cxg1/Data/train2014'
+    valid='/data/cxg1/Data/val2014'
+    TrainAnnoFile='/data/cxg1/Data/annotations/instances_train2014.json'
+    ValAnnoFile='/data/cxg1/Data/annotations/instances_val2014.json'
+
+    coco = LoadCOCO(train, TrainAnnoFile, hyper=hyp, img_size=(416,416), augment=True)
+    img, labels, _, _ = coco[15]
+
+    img = img.permute(1, 2, 0).numpy()
+    labels = labels.numpy()
+    h, w = img.shape[:2]
+    print(labels, h, w)
+    for label in labels:
+        top = (int((label[2]+label[4]/2)*w), int((label[3]+label[5]/2)*h))
+        down = (int((label[2]-label[4]/2)*w), int((label[3]-label[5]/2)*h))
+        print(top, down)
+        img = cv2.rectangle(img, top, down, (255, 0, 0))
+    img = cv2.imwrite("rotation.png", img)
