@@ -621,103 +621,12 @@ def load_mosaic(self, index):
 
     return img4, labels4
 
-class LoadCOCO(Dataset):
-    def __init__(self, root_path, annfile, hyper, img_size, augment):
-        super(LoadCOCO, self).__init__()
-        self.coco = CocoDetection(root_path, annfile)
-        assert len(self.coco) > 0, 'No images found in %s with annotation file --  %s' % (root_path, annfile)
-        self.img_size = img_size
-        self.augment = augment
-        self.hyp = hyper
-    
-    def __len__(self):
-        return len(self.coco)
-
-    def __getitem__(self, index):
-        img, labels = self.coco[index]
-        img = np.array(img)
-        h0, w0 = img.shape[:2] # original size
-        coors = np.array([label['bbox'] for label in labels]) # x_left, y_left, width, height  (left_up_corner + width, height)
-        # assert len(coors.shape)==2, 'loaded empty label %d'%(index)
-        img_id = np.array([label['image_id'] for label in labels])
-        cls_id = np.array([label['category_id'] for label in labels], dtype=np.float32) - 1 # convert to 0 ~ 89
-
-        img, ratio, pad = letterbox(img, self.img_size, auto=False, scaleup=self.augment)
-        h, w = img.shape[:2] # current shape
-        shapes = (h0, w0), ((h / h0, w / w0), pad)  # for COCO mAP rescaling
-
-        # convert width, height 
-        labels = coors.copy()
-        nL = len(labels)  # number of labels
-        if len(labels.shape) == 2:
-            # convert to center coordinate
-            labels[:, 0] = ratio[0] * (coors[:, 0] + coors[:, 2] / 2 ) + pad[0]  # pad width
-            labels[:, 1] = ratio[1] * (coors[:, 1] + coors[:, 3] / 2 ) + pad[1]  # pad height
-
-            # scale in current image
-            labels[:, 2] = ratio[0] * coors[:, 2]
-            labels[:, 3] = ratio[0] * coors[:, 3] 
-
-            if self.augment:
-                # convert from (center + w, h) to (x1y1x2y2)
-                diag = xywh2xyxy(labels)
-                diag = np.concatenate([cls_id[:, np.newaxis], diag], axis=1) # (N, cls + xyxy)
-
-                img, diag = random_affine(img, diag,
-                                        degrees=hyp['degrees'],
-                                        translate=hyp['translate'],
-                                        scale=hyp['scale'],
-                                        shear=hyp['shear'])
-                
-                # re-assign the labels
-                labels = xyxy2xywh(diag[:, 1:]) #(N, xywh)
-                cls_id = diag[:, 0]
-
-                # random left-right flip
-                lr_flip = True
-                if lr_flip and random.random() < 0.5:
-                    img = np.fliplr(img)
-                    if nL:
-                        labels[:, 0] = w - labels[:, 0]
-
-                # random up-down flip
-                ud_flip = False
-                if ud_flip and random.random() < 0.5:
-                    img = np.flipud(img)
-                    if nL:
-                        labels[:, 1] = h - labels[:, 1]
-
-            # Normalize coordinates 0 - 1 (For Yolo training)
-            labels[:, [1, 3]] /= img.shape[0]  # height
-            labels[:, [0, 2]] /= img.shape[1]  # width
-            
-            labels[np.where(labels>1.0)] = 1.0
-            labels[np.where(labels<0.0)] = 0.0 
-
-        nL = len(labels)
-        labels_out = torch.zeros((nL, 6))
-        if nL:
-            labels_out[:, 2:] = torch.from_numpy(labels)
-            labels_out[:, 1] = torch.from_numpy(cls_id)
-
-        # Convert
-        img = np.ascontiguousarray(img)
-
-        return torch.from_numpy(img.astype(np.float32)).permute(2, 0, 1), labels_out, img_id, shapes
-
-    @staticmethod
-    def collate_fn(batch):
-        img, label, path, shapes = zip(*batch)  # transposed
-        for i, l in enumerate(label):
-            l[:, 0] = i  # add target image index for build_targets()
-        return torch.stack(img, 0), torch.cat(label, 0), path, shapes
-
 def letterbox(img, new_shape=(416, 416), color=(114,114,114), auto=True, scaleFill=False, scaleup=True):
     """
     Resize the img to the given shape (new_shape) and calculate the corresponding ratio and padding value
 
     Input 
-        img: Input img (after resize, need to pad)
+        img: Input img
         new_shape: input shape for the neural network.
         color: padding color
 
@@ -834,9 +743,43 @@ def random_affine(img, targets=(), degrees=10, translate=.1, scale=.1, shear=10,
 
     return img, targets
 
-class KITTI(Dataset):
-    def __init__(self,img_path, label_path, ids = '/data/cxg1/VoxelNet_pro/Data/training/val.txt', transform=None, target_transform=None, transforms=None):
-        super(KITTI, self).__init__()
+class COCO(CocoDetection):
+    """
+    The input dictionary should contain parameters as follow:
+    `root`
+    `annFile`
+
+    You can find more details of the parameter here :
+    We don't need to transform images here
+    """
+    def __init__(self, config):
+        super().__init__(config['root'], config['annFile'])
+
+class KITTI(object):
+    """
+    Input configuration dictionary should include:
+
+    `img_path`: path to the image folder -- /path/to/kitti/image_2
+    `label_path`: path to the label folder -- /path/to/kitti/label_2
+    `ids`: train/val id -- /path/to/kitti/val.txt
+
+    class2id = {
+        'Misc': 1,
+        'Car': 2,
+        'Van': 3,
+        'Truck': 4,
+        'Pedestrian': 5,
+        'Person_sitting': 6,
+        'Cyclist': 7,
+        'Tram': 8, 
+    }
+    """
+    def __init__(self, config):
+        # parse all the parameters here.
+        ids = config['ids']
+        img_path = config['img_path']
+        label_path = config['label_path']
+
         self.ids = ids
         self.img_path = img_path
         self.label_path = label_path
@@ -855,7 +798,10 @@ class KITTI(Dataset):
             self.img_list.append(img_list[num])
             self.label_list.append(label_list[num])
 
+        print("Get training samples : ", len(self.img_list))
+
         self.class2id = {
+            'Misc': 1,
             'Car': 2,
             'Van': 3,
             'Truck': 4,
@@ -863,18 +809,19 @@ class KITTI(Dataset):
             'Person_sitting': 6,
             'Cyclist': 7,
             'Tram': 8,
-            'Misc': 1
         }
     
     def __len__(self):
-        return len(self.ids)
+        return len(self.img_list)
 
     def __getitem__(self, index):
          #get image and labels
         img_place = self.img_list[index]
         label_place = self.label_list[index]
+
         img = cv2.imread(os.path.join(self.img_path, img_place))
-        img = np.array(img, dtype = float)
+        img = img[:, :, ::-1] # convert to RGB order
+
         label_file = open(os.path.join(self.label_path, label_place), 'r')
         label = label_file.readlines()
         labels = []

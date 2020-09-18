@@ -5,7 +5,7 @@ from torch.utils.data import DataLoader
 
 from models import *
 from utils.datasets import *
-from utils.utils import *
+from utils.common_utils import *
 
 
 def test(cfg,

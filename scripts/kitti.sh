@@ -1,0 +1,2 @@
+#!/bin/bash
+nohup python -u lightning_train.py --batch-size 32 --cfg cfg/yolov3-spp.cfg --data KITTI --weights ./weights/yolov3-spp-ultralytics.pt --max_epochs 300 --gpus 5, --freeze --num_workers 32 2>&1 >kitti.log &

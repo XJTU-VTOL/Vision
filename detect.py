@@ -1,8 +1,7 @@
 import argparse
-
 from models import *  # set ONNX_EXPORT in models.py
 from utils.datasets import *
-from utils.utils import *
+from utils.common_utils import *
 
 
 def detect(save_img=False):
@@ -23,6 +22,10 @@ def detect(save_img=False):
     attempt_download(weights)
     if weights.endswith('.pt'):  # pytorch format
         model.load_state_dict(torch.load(weights, map_location=device)['model'])
+    elif weights.endswith('.ckpt'):
+        w = torch.load(weights, map_location=device)['state_dict']
+        w = {k[6:] : v for k, v in w.items()}
+        model.load_state_dict(w)
     else:  # darknet format
         load_darknet_weights(model, weights)
 
@@ -166,14 +169,14 @@ def detect(save_img=False):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--cfg', type=str, default='cfg/yolov3-spp.cfg', help='*.cfg path')
+    parser.add_argument('--cfg', type=str, default='cfg/yolov3-tiny.cfg', help='*.cfg path')
     parser.add_argument('--names', type=str, default='data/coco.names', help='*.names path')
-    parser.add_argument('--weights', type=str, default='weights/yolov3-spp-ultralytics.pt', help='weights path')
+    parser.add_argument('--weights', type=str, default='../coco_train/epoch=190.ckpt', help='weights path')
     parser.add_argument('--source', type=str, default='data/samples', help='source')  # input file/folder, 0 for webcam
     parser.add_argument('--output', type=str, default='output', help='output folder')  # output folder
-    parser.add_argument('--img-size', type=int, default=512, help='inference size (pixels)')
-    parser.add_argument('--conf-thres', type=float, default=0.3, help='object confidence threshold')
-    parser.add_argument('--iou-thres', type=float, default=0.6, help='IOU threshold for NMS')
+    parser.add_argument('--img-size', type=int, default=416, help='inference size (pixels)')
+    parser.add_argument('--conf-thres', type=float, default=0.5, help='object confidence threshold')
+    parser.add_argument('--iou-thres', type=float, default=0.7, help='IOU threshold for NMS')
     parser.add_argument('--fourcc', type=str, default='mp4v', help='output video codec (verify ffmpeg support)')
     parser.add_argument('--half', action='store_true', help='half precision FP16 inference')
     parser.add_argument('--device', default='', help='device id (i.e. 0 or 0,1) or cpu')

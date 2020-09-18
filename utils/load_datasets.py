@@ -13,50 +13,84 @@ from threading import Thread
 import cv2
 import numpy as np
 import torch
-from PIL import Image, ExifTags
 from torch.utils.data import Dataset
-from tqdm import tqdm
 
 from torch.utils import data
 import numpy as np
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 from torchvision import transforms
-
-from torchvision.datasets import CocoDetection
 import random
-
 from utils.common_utils import xyxy2xywh, xywh2xyxy
 
 from utils.dataset_utils import calculate_corners
-from utils.datasets import letterbox, random_affine, KITTI
+from utils.datasets import letterbox, random_affine, KITTI, COCO
   
 
-D = {
-    "COCO": CocoDetection,
+BaseDataset = {
+    "COCO": COCO,
     "KITTI": KITTI
 }
 
-def creat_dataset(config:dict):
-    return D[config["name"]](
-        config["img_path"],
-        config["label_path"]
-    )
+def create_dataset(config: dict):
+    """
+    To add other datasets, please follow the rules below.
+    The dataset should take a disctionary as input, which includes `img_path`, `label_path` and other keys as parameters. 
+    Please specify these parameters in the documentation of your own dataset so that we can parse what you want.
+    The dictionary must contain the `name` key , which indicates the base dataset. Add the name and dataset in 
+    the above `BaseDataset` dictionary.
+
+    your dataset should return:
+    image in np.array format:
+        Note: dtype must be np.uint8 and the channel should be in `RGB` (H, W, 3)
+    a dictionary with keys 
+        "bbox": (top_left_x, top_left_y, width, height) 
+        "image_id": corresponding image id/name
+        "category_id": category_id of the bounding box
+    """
+    return BaseDataset[config["name"]](config)
 
 class LoadDataset(Dataset):
-    def __init__(self, config):
+    """
+    Input configuration dictionary must contain
+
+    `base` : (dictionary) parameters for the base dataset. Please follow the documentation of the function
+             `create_dataset` to set up the dictionary.
+    `image_size`: (tuple or int) the input image size
+    `hyper`: (dictionary) parameters for image augmentation, which must contain:
+             `degrees`:  the amplitutde of random rotation degrees for image.
+             `translate`:  the amplitutde of random translation for image.
+             `scale`: the amplitutde of random scale for image.
+             `shear`: random shear scale
+    `augment`: whether to augment the image
+
+    The augmentation includes random affine transformation, left-right flip and up-down flip with 0.5 probability.
+
+    Return:
+        img: torch.Tensor float, normalied in 0.~1. in RGB order
+        label: (6, ) (batch_id, cls_id, x, y, w, h)
+        img_id: the name of the img file
+        shape: (h0, w0), ((h / h0, w / w0), pad) (original shape, (resize ratio), padding)
+
+    TODO:
+        ADD hsv and other augmentation
+    """
+    def __init__(self, config: dict):
         super(LoadDataset, self).__init__()
-        self.dataset = creat_dataset(config)
-        self.img_size = config["img_size"]
+        self.dataset = create_dataset(config['base'])
+        self.img_size = config["image_size"]
         self.augment = config["augment"]
-        self.hyp = config["hyper"]
+        if self.augment:
+            assert 'hyper' in config.keys(), 'Please add the parameters for data augmentation !'
+            self.hyp = config['hyper']
 
     def __len__(self):
         return len(self.dataset)
 
     def __getitem__(self, index):
         img, labels = self.dataset[index]
-        img = np.array(img)
+        if type(img) is not np.ndarray:
+            img = np.array(img)
         h0, w0 = img.shape[:2] # original size
         coors = np.array([label['bbox'] for label in labels]) # x_left, y_left, width, height  (left_up_corner + width, height)
         # assert len(coors.shape)==2, 'loaded empty label %d'%(index)
@@ -86,10 +120,10 @@ class LoadDataset(Dataset):
                 diag = np.concatenate([cls_id[:, np.newaxis], diag], axis=1) # (N, cls + xyxy)
 
                 img, diag = random_affine(img, diag,
-                                        degrees=hyp['degrees'],
-                                        translate=hyp['translate'],
-                                        scale=hyp['scale'],
-                                        shear=hyp['shear'])
+                                        degrees=self.hyp['degrees'],
+                                        translate=self.hyp['translate'],
+                                        scale=self.hyp['scale'],
+                                        shear=self.hyp['shear'])
                 
                 # re-assign the labels
                 labels = xyxy2xywh(diag[:, 1:]) #(N, xywh)
@@ -123,9 +157,10 @@ class LoadDataset(Dataset):
             labels_out[:, 1] = torch.from_numpy(cls_id)
 
         # Convert
+        img = img.transpose(2, 0, 1)
         img = np.ascontiguousarray(img)
 
-        return torch.from_numpy(img.astype(np.float32)).permute(2, 0, 1), labels_out, img_id, shapes
+        return torch.from_numpy(img).float()/255.0, labels_out, img_id, shapes
 
     @staticmethod
     def collate_fn(batch):
@@ -133,8 +168,11 @@ class LoadDataset(Dataset):
         for i, l in enumerate(label):
             l[:, 0] = i  # add target image index for build_targets()
         return torch.stack(img, 0), torch.cat(label, 0), path, shapes
+ 
+if __name__=='__main__':
+    # Feel Free to add your test code here !
 
-hyp = {'giou': 3.54,  # giou loss gain
+    hyp = {'giou': 3.54,  # giou loss gain
        'cls': 37.4,  # cls loss gain
        'cls_pw': 1.0,  # cls BCELoss positive_weight
        'obj': 64.3,  # obj loss gain (*=img_size/320 if img_size != 320)
@@ -152,18 +190,19 @@ hyp = {'giou': 3.54,  # giou loss gain
        'translate': 0.05 * 0,  # image translation (+/- fraction)
        'scale': 0.05 * 0,  # image scale (+/- gain)
        'shear': 0.641 * 0}  # image shear (+/- deg)
- 
- 
-if __name__=='__main__':
+
     config = {
-        "name": "KITTI",
-        "img_path": '/data/cxg1/VoxelNet_pro/Data/training/image_2',
-        "label_path": '/data/cxg1/VoxelNet_pro/Data/training/label_2',
+        "base":{
+            "name": "KITTI",
+            "img_path": '/data/cxg1/VoxelNet_pro/Data/training/image_2',
+            "label_path": '/data/cxg1/VoxelNet_pro/Data/training/label_2',
+            "ids": "/data/cxg1/VoxelNet_pro/training/train.txt"
+        },
         "img_size": 416,
         "hyper": hyp,
         "augment": True
-
     }
+
     kitti = LoadDataset(config)
     img, labels, _, _ = kitti[2]
     img = img.permute(1, 2, 0).numpy()
@@ -173,4 +212,7 @@ if __name__=='__main__':
         top = (int((label[2]+label[4]/2)*w), int((label[3]+label[5]/2)*h))
         down = (int((label[2]-label[4]/2)*w), int((label[3]-label[5]/2)*h))
         img = cv2.rectangle(img, top, down, (255, 0, 0))
+        font_scale = 0.03*int((label[4]*w))
+        cv2.putText(img, "car", (int((label[2]-label[4]/2)*w), int((label[3]-label[5]/2)*h)), cv2.FONT_HERSHEY_PLAIN,  font_scale, (0,255,0), 1)
+
     img = cv2.imwrite("rotation.png", img)                     

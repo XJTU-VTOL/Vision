@@ -137,7 +137,12 @@ def scale_coords(img1_shape, coords, img0_shape, ratio_pad=None):
 
 
 def clip_coords(boxes, img_shape):
-    # Clip bounding xyxy bounding boxes to image shape (height, width)
+    """
+    Clip bounding xyxy bounding boxes to image shape (height, width)
+    Input:
+        boxes: tensor (M, 4) (x1, y1, x2, y2)
+        image_shape: (h, w)
+    """
     boxes[:, 0].clamp_(0, img_shape[1])  # x1
     boxes[:, 1].clamp_(0, img_shape[0])  # y1
     boxes[:, 2].clamp_(0, img_shape[1])  # x2
@@ -236,8 +241,19 @@ def compute_ap(recall, precision):
     return ap
 
 
-def bbox_iou(box1, box2, x1y1x2y2=True, GIoU=False, DIoU=False, CIoU=False):
-    # Returns the IoU of box1 to box2. box1 is 4, box2 is nx4
+def bbox_iou(box1:torch.Tensor, box2:torch.Tensor, x1y1x2y2=True, GIoU=False, DIoU=False, CIoU=False):
+    """
+    Returns the IoU of box1 to box2. box1 is 4xm, box2 is nx4
+    
+    Input:
+        box1: shape (M, 4) (x, y, w, h) or (x, y, x, y)
+        box2: shape (4, N) (x, y, w, h) or (x, y, x, y)
+        x1y1x2y2: bool, Input format; True --> input boxes are (x,y,x,y) ; False --> input boxes are (x, y, w, h)
+        GIOU: Generalized IoU https://arxiv.org/pdf/1902.09630.pdf
+        DIOU, CIOU: Distance or Complete IoU https://arxiv.org/abs/1911.08287v1
+    Output:
+        iou: (M, N)
+    """
     box2 = box2.t()
 
     # Get the coordinates of bounding boxes
@@ -307,7 +323,15 @@ def box_iou(box1, box2):
     return inter / (area1[:, None] + area2 - inter)  # iou = inter / (area1 + area2 - inter)
 
 
-def wh_iou(wh1, wh2):
+def wh_iou(wh1: torch.Tensor, wh2: torch.Tensor):
+    """
+    Compute iou of wh boxes
+    Input:
+        wh1 : shape (N, 2); first dim: number of boxes; second dim: width, height
+        wh2 : shape (M, 2); first dim: number of boxes; second dim: width, height
+    Return:
+        iou : shape (N, M) for (i, j) the iou of box i in wh1 and box j in wh2
+    """
     # Returns the nxm IoU matrix. wh1 is nx2, wh2 is mx2
     wh1 = wh1[:, None]  # [N,1,2]
     wh2 = wh2[None]  # [1,M,2]
@@ -482,9 +506,8 @@ def non_max_suppression(prediction, conf_thres=0.1, iou_thres=0.6, multi_label=T
     Returns detections with shape:
         nx6 (x1, y1, x2, y2, conf, cls)
     """
-
     # Settings
-    merge = True  # merge for best mAP
+    merge = False  # merge for best mAP
     min_wh, max_wh = 2, 4096  # (pixels) minimum and maximum box width and height
     time_limit = 10.0  # seconds to quit after
 

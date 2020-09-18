@@ -9,7 +9,7 @@ import test  # import test.py to get mAP after each epoch
 from models import *
 from utils.datasets import *
 from utils.common_utils import *
-from utils.load_kitti import LoadKitti
+from utils.load_datasets import LoadDataset
 
 mixed_precision = True
 try:  # Mixed precision training https://github.com/NVIDIA/apex
@@ -82,7 +82,7 @@ def train(hyp):
     train_path = data_dict['train']
     test_path = data_dict['valid']
     nc = 1 if opt.single_cls else int(data_dict['classes'])  # number of classes
-    hyp['cls'] *= nc / 80  # update coco-tuned hyp['cls'] to current dataset
+    hyp['cls'] *= nc / 90  # update coco-tuned hyp['cls'] to current dataset
 
     # Remove previous results
     for f in glob.glob('*_batch*.jpg') + glob.glob(results_file):
@@ -191,11 +191,8 @@ def train(hyp):
         model.yolo_layers = model.module.yolo_layers  # move yolo layer indices to top level
 
     # Dataset
-    dataset = LoadKitti('/data/cxg1/VoxelNet_pro/Data/training/image_2','/data/cxg1/VoxelNet_pro/Data/training/label_2',
-                        train_path, img_size,
-                        augment=True,
-                        hyp=hyp,  # augmentation hyperparameters
-                        )
+    from data.coco import coco_train_dataset_cfg, coco_val_dataset_cfg
+    dataset = LoadDataset(coco_train_dataset_cfg)
 
     # Dataloader
     batch_size = min(batch_size, len(dataset))
@@ -208,9 +205,7 @@ def train(hyp):
                                              collate_fn=dataset.collate_fn)
 
     # Testloader
-    testloader = torch.utils.data.DataLoader(LoadKitti('/data/cxg1/VoxelNet_pro/Data/training/image_2','/data/cxg1/VoxelNet_pro/Data/training/label_2',
-                                                        test_path, imgsz_test, augment=False,
-                                                        hyp=hyp),
+    testloader = torch.utils.data.DataLoader(LoadDataset(coco_val_dataset_cfg),
                                              batch_size=batch_size,
                                              num_workers=nw,
                                              pin_memory=True,
