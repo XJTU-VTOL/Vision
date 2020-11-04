@@ -99,7 +99,7 @@ if __name__=='__main__':
     )
 
     model = YoloLight(opt, hyp, nc, transfer=opt.freeze)
-    trainer = pl.Trainer.from_argparse_args(opt, checkpoint_callback=checkpoint_callback, resume_from_checkpoint=opt.ckpt, distributed_backend='ddp')
+    trainer = pl.Trainer.from_argparse_args(opt, checkpoint_callback=checkpoint_callback, resume_from_checkpoint=opt.ckpt)
     trainer.fit(model, train_dataloader=train_dataloader, val_dataloaders=val_dataloader)
 
     # save the latest one

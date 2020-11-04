@@ -523,6 +523,8 @@ class YoloLight(ModelBase):
             if niou > 1:
                 p, r, ap, f1 = p[:, 0], r[:, 0], ap.mean(1), ap[:, 0]  # [P, R, AP@0.5:0.95, AP@0.5]
             mp, mr, mean_ap, mf1 = p.mean(), r.mean(), ap.mean(), f1.mean()
+            print(len(stats))
+            print(len(stats[3]))
             nt = np.bincount(stats[3].astype(np.int64), minlength=self.model.nc)  # number of targets per class
         else:
             nt = torch.zeros(1)

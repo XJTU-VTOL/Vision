@@ -24,12 +24,13 @@ import random
 from utils.common_utils import xyxy2xywh, xywh2xyxy
 
 from utils.dataset_utils import calculate_corners
-from utils.datasets import letterbox, random_affine, KITTI, COCO
+from utils.datasets import letterbox, random_affine, KITTI, COCO, VisDrone
   
 
 BaseDataset = {
     "COCO": COCO,
-    "KITTI": KITTI
+    "KITTI": KITTI,
+    "VisDrone": VisDrone
 }
 
 def create_dataset(config: dict):
@@ -47,6 +48,7 @@ def create_dataset(config: dict):
         "bbox": (top_left_x, top_left_y, width, height) 
         "image_id": corresponding image id/name
         "category_id": category_id of the bounding box
+                    range (1 ~ nc)
     """
     return BaseDataset[config["name"]](config)
 
