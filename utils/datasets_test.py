@@ -25,6 +25,55 @@ hyp = {'giou': 3.54,  # giou loss gain
        'scale': 0.05 ,  # image scale (+/- gain)
        'shear': 0.641 }  # image shear (+/- deg)
 
+output_name = 'fix.jpg'
+
+def draw_boxes(img, labels):
+    """
+    Helper functions to draw boxes on images
+    This follows the same data process in the I - II Dataset Architeture
+    You just need to feed the `img` and `labels` returned by the I Dataset Class, the protocol is the same
+
+    Input:
+        img: input image data (in RGB order, format -- PIL, np.ndarray)
+        labels: input labels data
+    """
+    if type(img) != np.ndarray:
+        img = np.array(img)
+    img = img[:, :, ::-1]
+    coors = np.array([label['bbox'] for label in labels]) # x_left, y_left, width, height
+    for label in coors:
+        top = (int(label[0]), int(label[1]))
+        down = (int(label[0] + label[2]), int(label[1]+label[3]))
+        img = cv2.rectangle(cv2.UMat(img).get(), top, down, (255, 0, 0))
+    return img
+
+
+def coco_test():
+    train='/data/cxg1/Data/train2014'
+    valid='/data/cxg1/Data/val2014'
+    TrainAnnoFile='/data/cxg1/Data/annotations/instances_train2014.json'
+    ValAnnoFile='/data/cxg1/Data/annotations/instances_val2014.json'
+    config = {
+        'root': train,
+        'annFile': TrainAnnoFile
+    }
+    coco = COCO(config)
+    img, labels = coco[120]
+    img = draw_boxes(img, labels)
+    img = cv2.imwrite(output_name, img)
+
+def kitti_test():
+    train = {
+        'name': 'KITTI',
+        'img_path': '/data/cxg1/VoxelNet_pro/Data/training/image_2',
+        'label_path': '/data/cxg1/VoxelNet_pro/Data/training/label_2',
+        'ids': '/data/cxg1/VoxelNet_pro/Data/training/train.txt'
+    }
+    kitti = KITTI(train)
+    img, labels = kitti[120]
+    img = draw_boxes(img, labels)
+    img = cv2.imwrite(output_name, img)
+
 def test_visdrone():
     """
     Test cases for visdrone datasets
@@ -46,7 +95,7 @@ def test_visdrone():
         bbox[2] = bbox[0] + bbox[2]
         bbox[3] = bbox[1] + bbox[3]
         img = cv2.rectangle(img, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (255, 0, 0))
-    cv2.imwrite("visdrone.jpg", img)
+    cv2.imwrite(output_name, img)
 
     # lenth = len(visdrone)
     # cat = []
@@ -60,4 +109,4 @@ def test_visdrone():
     # print(lenth)
 
 if __name__=='__main__':
-    test_visdrone()
+    coco_test()

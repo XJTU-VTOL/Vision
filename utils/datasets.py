@@ -720,13 +720,13 @@ def random_affine(img, targets=(), degrees=10, translate=.1, scale=.1, shear=10,
         xy = np.concatenate((x.min(1), y.min(1), x.max(1), y.max(1))).reshape(4, n).T
 
         # # apply angle-based reduction of bounding boxes
-        # radians = a * math.pi / 180
-        # reduction = max(abs(math.sin(radians)), abs(math.cos(radians))) ** 0.5
-        # x = (xy[:, 2] + xy[:, 0]) / 2
-        # y = (xy[:, 3] + xy[:, 1]) / 2
-        # w = (xy[:, 2] - xy[:, 0]) * reduction
-        # h = (xy[:, 3] - xy[:, 1]) * reduction
-        # xy = np.concatenate((x - w / 2, y - h / 2, x + w / 2, y + h / 2)).reshape(4, n).T
+        radians = a * math.pi / 180
+        reduction = max(abs(math.sin(radians)), abs(math.cos(radians))) ** 0.5
+        x = (xy[:, 2] + xy[:, 0]) / 2
+        y = (xy[:, 3] + xy[:, 1]) / 2
+        w = (xy[:, 2] - xy[:, 0]) * reduction
+        h = (xy[:, 3] - xy[:, 1]) * reduction
+        xy = np.concatenate((x - w / 2, y - h / 2, x + w / 2, y + h / 2)).reshape(4, n).T
 
         # reject warped points outside of image
         xy[:, [0, 2]] = xy[:, [0, 2]].clip(0, width)
@@ -912,7 +912,10 @@ class KITTI(object):
 
         bbox[:, 2] = bbox[:, 2] - bbox[:, 0]
         bbox[:, 3] = bbox[:, 3] - bbox[:, 1]
+<<<<<<< HEAD
 
+=======
+>>>>>>> 8f5d9531bc50295f0e508dc883c4dfa3a0379b8c
         targets = []
 
         for i in range(lens):
