@@ -720,13 +720,13 @@ def random_affine(img, targets=(), degrees=10, translate=.1, scale=.1, shear=10,
         xy = np.concatenate((x.min(1), y.min(1), x.max(1), y.max(1))).reshape(4, n).T
 
         # # apply angle-based reduction of bounding boxes
-        # radians = a * math.pi / 180
-        # reduction = max(abs(math.sin(radians)), abs(math.cos(radians))) ** 0.5
-        # x = (xy[:, 2] + xy[:, 0]) / 2
-        # y = (xy[:, 3] + xy[:, 1]) / 2
-        # w = (xy[:, 2] - xy[:, 0]) * reduction
-        # h = (xy[:, 3] - xy[:, 1]) * reduction
-        # xy = np.concatenate((x - w / 2, y - h / 2, x + w / 2, y + h / 2)).reshape(4, n).T
+        radians = a * math.pi / 180
+        reduction = max(abs(math.sin(radians)), abs(math.cos(radians))) ** 0.5
+        x = (xy[:, 2] + xy[:, 0]) / 2
+        y = (xy[:, 3] + xy[:, 1]) / 2
+        w = (xy[:, 2] - xy[:, 0]) * reduction
+        h = (xy[:, 3] - xy[:, 1]) * reduction
+        xy = np.concatenate((x - w / 2, y - h / 2, x + w / 2, y + h / 2)).reshape(4, n).T
 
         # reject warped points outside of image
         xy[:, [0, 2]] = xy[:, [0, 2]].clip(0, width)
@@ -754,6 +754,7 @@ class COCO(CocoDetection):
     """
     def __init__(self, config):
         super().__init__(config['root'], config['annFile'])
+
 
 class KITTI(object):
     """
@@ -842,8 +843,6 @@ class KITTI(object):
 
         bbox[:, 2] = bbox[:, 2] - bbox[:, 0]
         bbox[:, 3] = bbox[:, 3] - bbox[:, 1]
-
-
         targets = []
 
         for i in range(lens):
@@ -981,43 +980,3 @@ def create_folder(path='./new_folder'):
     if os.path.exists(path):
         shutil.rmtree(path)  # delete output folder
     os.makedirs(path)  # make new output folder
-
-
-hyp = {'giou': 3.54,  # giou loss gain
-       'cls': 37.4,  # cls loss gain
-       'cls_pw': 1.0,  # cls BCELoss positive_weight
-       'obj': 64.3,  # obj loss gain (*=img_size/320 if img_size != 320)
-       'obj_pw': 1.0,  # obj BCELoss positive_weight
-       'iou_t': 0.20,  # iou training threshold
-       'lr0': 0.01,  # initial learning rate (SGD=5E-3, Adam=5E-4)
-       'lrf': 0.0005,  # final learning rate (with cos scheduler)
-       'momentum': 0.937,  # SGD momentum
-       'weight_decay': 0.0005,  # optimizer weight decay
-       'fl_gamma': 0.0,  # focal loss gamma (efficientDet default is gamma=1.5)
-       'hsv_h': 0.0138,  # image HSV-Hue augmentation (fraction)
-       'hsv_s': 0.678,  # image HSV-Saturation augmentation (fraction)
-       'hsv_v': 0.36,  # image HSV-Value augmentation (fraction)
-       'degrees': 1.98 ,  # image rotation (+/- deg)
-       'translate': 0.05 ,  # image translation (+/- fraction)
-       'scale': 0.05 ,  # image scale (+/- gain)
-       'shear': 0.641 }  # image shear (+/- deg)
-
-if __name__=='__main__':
-    train='/data/cxg1/Data/train2014'
-    valid='/data/cxg1/Data/val2014'
-    TrainAnnoFile='/data/cxg1/Data/annotations/instances_train2014.json'
-    ValAnnoFile='/data/cxg1/Data/annotations/instances_val2014.json'
-
-    coco = LoadCOCO(train, TrainAnnoFile, hyper=hyp, img_size=(416,416), augment=True)
-    img, labels, _, _ = coco[15]
-
-    img = img.permute(1, 2, 0).numpy()
-    labels = labels.numpy()
-    h, w = img.shape[:2]
-    print(labels, h, w)
-    for label in labels:
-        top = (int((label[2]+label[4]/2)*w), int((label[3]+label[5]/2)*h))
-        down = (int((label[2]-label[4]/2)*w), int((label[3]-label[5]/2)*h))
-        print(top, down)
-        img = cv2.rectangle(img, top, down, (255, 0, 0))
-    img = cv2.imwrite("rotation.png", img)
