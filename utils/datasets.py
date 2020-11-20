@@ -912,10 +912,6 @@ class KITTI(object):
 
         bbox[:, 2] = bbox[:, 2] - bbox[:, 0]
         bbox[:, 3] = bbox[:, 3] - bbox[:, 1]
-<<<<<<< HEAD
-
-=======
->>>>>>> 8f5d9531bc50295f0e508dc883c4dfa3a0379b8c
         targets = []
 
         for i in range(lens):

@@ -5,7 +5,7 @@ from lightning_model import YoloLight
 from torch import nn
 import pytorch_lightning as pl
 from torch.utils.data import DataLoader
-from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateLogger
+from pytorch_lightning.callbacks import ModelCheckpoint
 import os
 from utils.load_datasets import LoadDataset 
 import math
@@ -35,7 +35,7 @@ if __name__=='__main__':
     parser = pl.Trainer.add_argparse_args(parser)
     parser.add_argument('--batch-size', type=int, default=16)  # effective bs = batch_size * accumulate = 16 * 4 = 64
     parser.add_argument('--cfg', type=str, default='cfg/yolov3-spp.cfg', help='*.cfg path')
-    parser.add_argument('--num_workers', type=int, default=1, help='num workers for dataloader')
+    parser.add_argument('--num_workers', type=int, default=8, help='num workers for dataloader')
     parser.add_argument('--data', type=str, default='COCO', help='dataset name')
     parser.add_argument('--weights', type=str, default=None, help='initial weights path')
     parser.add_argument('--name', default='', help='renames results.txt to results_name.txt if supplied')
@@ -92,7 +92,7 @@ if __name__=='__main__':
         filepath=opt.save_path,
         save_top_k=4,
         verbose=True,
-        monitor='mAp',
+        monitor='ap',
         mode='max',
         save_weights_only=False,
         prefix='',
@@ -100,6 +100,13 @@ if __name__=='__main__':
 
     model = YoloLight(opt, hyp, nc, transfer=opt.freeze)
     trainer = pl.Trainer.from_argparse_args(opt, checkpoint_callback=checkpoint_callback, resume_from_checkpoint=opt.ckpt)
+
+    print(opt.auto_lr_find)
+    # find lr automatically if auto_lr_find is True
+    if opt.auto_lr_find:
+        # Run learning rate finder
+        trainer.tune(model, train_dataloader, val_dataloader)
+
     trainer.fit(model, train_dataloader=train_dataloader, val_dataloaders=val_dataloader)
 
     # save the latest one

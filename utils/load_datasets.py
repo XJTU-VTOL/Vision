@@ -164,6 +164,7 @@ class LoadDataset(Dataset):
         img = np.ascontiguousarray(img)
 
         return torch.from_numpy(img).float()/255.0, labels_out, img_id, shapes
+        
 
     @staticmethod
     def collate_fn(batch):

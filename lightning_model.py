@@ -13,19 +13,21 @@ import os
 import numpy as np
 import torchvision
 import time
-from utils.common_utils import non_max_suppression, bbox_iou, clip_coords
+from utils.common_utils import non_max_suppression, bbox_iou, clip_coords, box_iou
 import math
 
 class ModelBase(pl.LightningModule):
     def __init__(self, hyper):
         super(ModelBase, self).__init__()
         self.hparams = hyper
+        # set the leraning rate attribute to find auto learning rate
+        self.lr = self.hparams["lr0"]
 
     def configure_optimizers(self):
         lf = lambda x: (((1 + math.cos(x * math.pi / self.total_epoch)) / 2) ** 1.0) * 0.95 + 0.05  # cosine
 
         updated_params = []
-        if hasattr(self, 'conv_layer_index'):
+        if self.conv_layer_index:
             for i in self.conv_layer_index:
                 updated_params += list(self.model.module_list[i].parameters())
         else:
@@ -33,7 +35,7 @@ class ModelBase(pl.LightningModule):
 
         self.optimizer = torch.optim.SGD(
             updated_params,
-            lr=self.hparams["lr0"],
+            lr=self.lr,
             weight_decay=self.hparams["weight_decay"],
             momentum=self.hparams['momentum']
         )
@@ -48,29 +50,6 @@ class ModelBase(pl.LightningModule):
 def smooth_BCE(eps=0.1):  # https://github.com/ultralytics/yolov3/issues/238#issuecomment-598028441
     # return positive, negative label smoothing BCE targets
     return 1.0 - 0.5 * eps, 0.5 * eps
-
-def box_iou(box1, box2):
-    # https://github.com/pytorch/vision/blob/master/torchvision/ops/boxes.py
-    """
-    Return intersection-over-union (Jaccard index) of boxes.
-    Both sets of boxes are expected to be in (x1, y1, x2, y2) format.
-    Arguments:
-        box1 (Tensor[N, 4])
-        box2 (Tensor[M, 4])
-    Returns:
-        iou (Tensor[N, M]): the NxM matrix containing the pairwise
-            IoU values for every element in boxes1 and boxes2
-    """
-    def box_area(box):
-        # box = 4xn
-        return (box[2] - box[0]) * (box[3] - box[1])
-
-    area1 = box_area(box1.t())
-    area2 = box_area(box2.t())
-
-    # inter(N,M) = (rb(N,M,2) - lt(N,M,2)).clamp(0).prod(2)
-    inter = (torch.min(box1[:, None, 2:], box2[:, 2:]) - torch.max(box1[:, None, :2], box2[:, :2])).clamp(0).prod(2)
-    return inter / (area1[:, None] + area2 - inter)  # iou = inter / (area1 + area2 - inter)
 
 class FocalLoss(nn.Module):
     # Wraps focal loss around existing loss_fcn(), i.e. criteria = FocalLoss(nn.BCEWithLogitsLoss(), gamma=1.5)
@@ -110,6 +89,15 @@ class YoloLight(ModelBase):
         self.model.nc = nc
         # Giou Loss ratio
         self.model.gr = gr
+        # conv layer index before the yolo head (if transfer is set, this will be a list of integer)
+        self.conv_layer_index = None
+
+        # choose the iou threshold for AP computation
+        self.iouv = None  # comment for AP@0.5
+        self.niou = None
+        # List to store statistics results
+        self.stats = []
+        self.seen = 0
 
         # Load initial weights here
         if opt.weights is not None and os.path.exists(opt.weights):
@@ -138,6 +126,7 @@ class YoloLight(ModelBase):
             print("freeze layers ...")
             yolo_layer_index = self.model.yolo_layers
             self.conv_layer_index = [i-1 for i in yolo_layer_index]
+            print("update paramters in layer :", self.conv_layer_index)
             for i, module in enumerate(self.model.module_list):
                 if i not in self.conv_layer_index:
                     for param in module.parameters():
@@ -340,23 +329,13 @@ class YoloLight(ModelBase):
     
     def training_step(self, batch, batch_idx):
         imgs, targets, paths, _ = batch
-        if batch_idx == 0 and self.current_epoch == 1:
-            images = imgs.detach().permute(0, 2, 3, 1).cpu().numpy()
-            target = targets.detach().cpu().numpy()
-            images = draw_box(images, target)
-            self.logger.experiment.add_images('label samples', images, dataformats='NHWC')
         pred = self.model(imgs)
         loss, loss_items = self.compute_loss(pred, targets)
-        return {'loss': loss, 'log':loss_items}
-
-    def training_epoch_end(self, outputs):
-        avg_loss = torch.stack([ x['loss'] for x in outputs]).mean()
-        return {'loss':avg_loss}
-
-    def validation_epoch_end(self, outputs):
-        avg_preision = torch.tensor( [ x['mAp'] for x in outputs] ).mean()
-        print("\n epoch : %d mAP reached %f \n"%(self.current_epoch, avg_preision))
-        return {'mAp': avg_preision}
+        for name, items in loss_items.items():
+            self.log(name, items, on_step=True, on_epoch=True)
+        lr = self.optimizer.param_groups[0]['lr']
+        self.log('lr', lr, on_step=True, prog_bar=True)
+        return loss
 
     def get_boxes(self, prediction, conf_thres=0.1, iou_thres=0.6, multi_label=True, classes=None, agnostic=False, merge=True):
         """
@@ -450,13 +429,14 @@ class YoloLight(ModelBase):
     
     def validation_step(self, batch, batch_idx):
         imgs, targets, paths, _ = batch
-        iouv = torch.linspace(0.5, 0.95, 10, device=imgs.device)  # iou vector for mAP@0.5:0.95
-        # choose the iou threshold for AP computation
-        iouv = iouv[0].view(1)  # comment for AP@0.5
-        niou = iouv.numel()
-        # List to store statistics results
-        stats = []
-        seen = 0
+        if batch_idx == 0 and len(self.stats) != 0:
+            self.stats.clear()
+            
+        if self.iouv is None:
+            self.iouv = torch.linspace(0.5, 0.95, 10, device=imgs.device)  # iou vector for mAP@0.5:0.95
+            # choose the iou threshold for AP computation
+            self.iouv = self.iouv[0].view(1)  # comment for AP@0.5
+            self.niou = self.iouv.numel()
 
         nb, _, height, width = imgs.shape  # batch size, channels, height, width
         whwh = torch.tensor([width, height, width, height], device=imgs.device)
@@ -471,18 +451,18 @@ class YoloLight(ModelBase):
             nl = len(labels)
             # target classes (List)
             tcls = labels[:, 0].tolist() if nl else []  # target class
-            seen += 1
+            self.seen += 1
 
             if pred is None:
                 if nl:
-                    stats.append((torch.zeros(0, niou, dtype=torch.bool).numpy(), torch.Tensor().numpy(), torch.Tensor().numpy(), tcls))
+                    self.stats.append((torch.zeros(0, self.niou, dtype=torch.bool).numpy(), torch.Tensor().numpy(), torch.Tensor().numpy(), tcls))
                 continue
 
             # Clip boxes to image bounds (inplace operation)
             clip_coords(pred, (height, width))
             
             # initialize correct tensor
-            correct = torch.zeros(pred.shape[0], niou, dtype=torch.bool, device=pred.device)
+            correct = torch.zeros(pred.shape[0], self.niou, dtype=torch.bool, device=pred.device)
             if nl:
                 detected = []  # target indices
                 tcls_tensor = labels[:, 0]
@@ -505,26 +485,26 @@ class YoloLight(ModelBase):
                         ious, _ = torch.sort(ious, descending=True)
 
                         # Append detections (higher than the iou threshold)
-                        for j in (ious > iouv[0]).nonzero():
+                        for j in (ious > self.iouv[0]).nonzero():
                             d = ti[i[j]]  # detected target
                             if d not in detected:
                                 detected.append(d)
-                                correct[pi[j]] = ious[j] > iouv  # iou_thres is 1xn
+                                correct[pi[j]] = ious[j] > self.iouv  # iou_thres is 1xn
                                 if len(detected) == nl:  # all targets already located in image
                                     break
             
             # Append statistics (correct, conf, pcls, tcls)
-            stats.append((correct.cpu().numpy(), pred[:, 4].cpu().numpy(), pred[:, 5].cpu().numpy(), tcls))
+            self.stats.append((correct.cpu().numpy(), pred[:, 4].cpu().numpy(), pred[:, 5].cpu().numpy(), tcls))
 
+    def validation_epoch_end(self, outputs):
         # Compute statistics
-        stats = [np.concatenate(x, 0) for x in zip(*stats)]  # to numpy
+        stats = [np.concatenate(x, 0) for x in zip(*self.stats)]  # to numpy
+        self.stats.clear()  # clean the statistics of the current epoch
         if len(stats):
             p, r, ap, f1, ap_class = ap_per_class(*stats)
-            if niou > 1:
+            if self.niou > 1:
                 p, r, ap, f1 = p[:, 0], r[:, 0], ap.mean(1), ap[:, 0]  # [P, R, AP@0.5:0.95, AP@0.5]
             mp, mr, mean_ap, mf1 = p.mean(), r.mean(), ap.mean(), f1.mean()
-            print(len(stats))
-            print(len(stats[3]))
             nt = np.bincount(stats[3].astype(np.int64), minlength=self.model.nc)  # number of targets per class
         else:
             nt = torch.zeros(1)
@@ -536,7 +516,8 @@ class YoloLight(ModelBase):
             'f1': mf1
         }
 
-        return {'mAp': mean_ap, 'log': metric}
+        for name, items in metric.items():
+            self.log(name, items, on_epoch=True)
 
     def detect(self, img: np.ndarray):
         """
@@ -683,7 +664,7 @@ def draw_box(imgs, target):
         for box in batch_target:
             top = (int((box[2]+box[4]/2)*w), int((box[3]+box[5]/2)*h))
             down = (int((box[2]-box[4]/2)*w), int((box[3]-box[5]/2)*h))
-            img = cv2.rectangle(img, top, down, color=(255, 0, 0), thickness=1)
+            img = cv2.rectangle(cv2.UMat(img).get(), top, down, (255, 0, 0))
         boxes.append(img)
     return np.stack(boxes, axis=0)
 

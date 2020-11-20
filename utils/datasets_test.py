@@ -80,8 +80,8 @@ def test_visdrone():
     """
     train = {
         'name': 'VisDrone',
-        'img_path': '/opt/data/private/VisDrone/VisDrone2019-DET-train/images',
-        'label_path': '/opt/data/private/VisDrone/VisDrone2019-DET-train/annotations',
+        'img_path': '/opt/data/private/VisDrone/VisDrone2019-DET-val/images',
+        'label_path': '/opt/data/private/VisDrone/VisDrone2019-DET-val/annotations',
         'verbose': True
     }
 
@@ -95,18 +95,18 @@ def test_visdrone():
         bbox[2] = bbox[0] + bbox[2]
         bbox[3] = bbox[1] + bbox[3]
         img = cv2.rectangle(img, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (255, 0, 0))
-    cv2.imwrite(output_name, img)
+    # cv2.imwrite(output_name, img)
 
-    # lenth = len(visdrone)
-    # cat = []
-    # for idx in range(lenth):
-    #     img, label = visdrone[idx]
-    #     for label in labels:
-    #         s = label['category_id']
-    #         if s not in cat:
-    #             cat.append(s)
-    # print(cat)
-    # print(lenth)
+    lenth = len(visdrone)
+    cat = []
+    for idx in range(lenth):
+        img, label = visdrone[idx]
+        for label in labels:
+            s = label['category_id']
+            if s not in cat:
+                cat.append(s)
+    print(cat)
+    print(lenth)
 
 if __name__=='__main__':
-    coco_test()
+    test_visdrone()

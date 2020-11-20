@@ -1,0 +1,23 @@
+[2020.11.18, 雷博书]
+
+加入  `auto_lr_find` 功能。`pytorch-lightning` 中需要将 `auto_lr_find` 设置为 `True` 传给 `Trainer` 即可。
+
+需要注意：
+
+在 `LightningModule` 中设置属性 `lr`。`trainer.tune` 会直接修改这个属性。优化器中的学习率可以使用这个属性设置。
+
+源代码位于 `pytorch-lightning/tuner/tuning.py` 与 `lr_finder.py` 中。
+
+TODO: 查找 auto_lr_find 使用场合。
+
+BUG REPORT:
+
+1. 在多 GPU 训练时，之前的版本 (1.0.4) 由于删除生成的临时文件，导致其余线程运行出错。将出错代码段替换成
+
+```python
+if trainer.is_global_zero:
+    trainer.checkpoint_connector.restore(str(save_path), on_gpu=trainer.on_gpu)
+    if os.exists(save_path):
+        os.rm(save_path)
+```
+

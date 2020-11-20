@@ -83,8 +83,37 @@ def test_coco():
     img = draw_labels(img, labels)
     img = cv2.imwrite(output_imgname, img)
 
+def test_visdrone():
+    VisDrone_train_dataset_cfg = {
+        'classes': 4,
+        'base': {
+            'name': 'VisDrone',
+            'img_path': '/opt/data/private/VisDrone/VisDrone2019-DET-val/images',
+            'label_path': '/opt/data/private/VisDrone/VisDrone2019-DET-val/annotations',
+        },
+        'augment': True,
+        'image_size': [192, 640],
+        'hyper': {
+            'degrees': 15,  # image rotation (+/- deg)
+            'translate': 0.05,  # image translation (+/- fraction)
+            'scale': 0.05,  # image scale (+/- gain)
+            'shear': 0.641,
+            'hsv_h': 0.0138,  # image HSV-Hue augmentation (fraction)
+            'hsv_s': 0.678,  # image HSV-Saturation augmentation (fraction)
+            'hsv_v': 0.36,  # image HSV-Value augmentation (fraction)
+        }
+    }
+    visdrone = LoadDataset(VisDrone_train_dataset_cfg)
+    for index in range(len(visdrone)):
+        try:
+            img, labels, _, _ = visdrone[index]
+            print("{} data success".format(index))
+        except:
+            print("{} data fail".format(index))
+
+
 
 if __name__=='__main__':
     # Feel Free to add your test code here !
-    test_coco()
+    test_visdrone()
          

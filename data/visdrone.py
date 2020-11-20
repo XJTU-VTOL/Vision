@@ -15,7 +15,7 @@ val = {
 VisDrone_train_dataset_cfg = {
     'classes': 4,
     'base': train,
-    'augment': False,
+    'augment': True,
     'image_size': [192, 640],
     'hyper': hyper
 }
@@ -23,7 +23,7 @@ VisDrone_train_dataset_cfg = {
 VisDrone_val_dataset_cfg = {
     "classes": 4,
     'base': val,
-    'augment': False,
+    'augment': True,
     'image_size': [192, 640],
     'hyper': hyper
 }

@@ -1,0 +1,3 @@
+#!/bin/bash
+nohup python -u lightning_train.py --auto_lr_find True --overfit_batches 0.01 --batch-size 16 --accumulate_grad_batches 4 --cfg cfg/yolov3.cfg --data VisDrone --weights weights/yolov3.pt --max_epochs 300 --save_path ../yolov3_coco --gpus 1 --num_workers 16 2>&1 >lightn.log &
+# nohup python -u lightning_train.py --auto_lr_find False --overfit_batches 0.01 --batch-size 16 --accumulate_grad_batches 4 --cfg cfg/yolov3.cfg --data VisDrone --weights weights/yolov3.pt --max_epochs 300 --save_path ../yolov3_coco --gpus 1 --num_workers 16 2>&1 >lightn.log &
