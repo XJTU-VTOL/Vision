@@ -1,42 +1,25 @@
 from argparse import ArgumentParser
 import torch
 from torch.nn import functional as F
-from lightning_model import YoloLight
-from torch import nn
+from yaml.loader import FullLoader
+from model import create_model
+import yaml
 import pytorch_lightning as pl
-from torch.utils.data import DataLoader
 from pytorch_lightning.callbacks import ModelCheckpoint
 import os
 from utils.load_datasets import LoadDataset 
+from utils.common_utils import updated_config
 import math
 import data as data_cfg
-
-# hyper parameters for model
-hyp = {
-        'giou': 3.54,  # giou loss gain
-        'cls': 37.4,  # cls loss gain
-        'cls_pw': 1.0,  # cls BCELoss positive_weight
-        'obj': 64.3,  # obj loss gain (*=img_size/320 if img_size != 320)
-        'obj_pw': 1.0,  # obj BCELoss positive_weight
-        'iou_t': 0.20,  # iou training threshold
-        'lr0': 0.001,  # initial learning rate (SGD=5E-3, Adam=5E-4)
-        'lrf': 0.00001,  # final learning rate (with cos scheduler)
-        'lr_decay': 0.1,
-        'momentum': 0.937,  # SGD momentum
-        'weight_decay': 0.0005,  # optimizer weight decay
-        'fl_gamma': 0.0,  # focal loss gamma (efficientDet default is gamma=1.5)
-        'conf_thres': 0.5, 
-        'iou_thres': 0.6, 
-        'multi_label': True
-    }  # image shear (+/- deg)
 
 if __name__=='__main__':
     parser = ArgumentParser()
     parser = pl.Trainer.add_argparse_args(parser)
     parser.add_argument('--batch-size', type=int, default=16)  # effective bs = batch_size * accumulate = 16 * 4 = 64
-    parser.add_argument('--cfg', type=str, default='cfg/yolov3-spp.cfg', help='*.cfg path')
+    parser.add_argument('--cfg', type=str, default='cfg/yolov3-spp.cfg', help='*.cfg path for training')
     parser.add_argument('--num_workers', type=int, default=8, help='num workers for dataloader')
     parser.add_argument('--data', type=str, default='COCO', help='dataset name')
+    parser.add_argument('--model', type=str, default="YOLO", help="model name")
     parser.add_argument('--weights', type=str, default=None, help='initial weights path')
     parser.add_argument('--name', default='', help='renames results.txt to results_name.txt if supplied')
     parser.add_argument('--single-cls', action='store_true', help='train as single-class dataset')
@@ -46,32 +29,40 @@ if __name__=='__main__':
     opt = parser.parse_args()
 
     print(opt)
-
     cfg = opt.cfg
     data = opt.data
     epochs = opt.max_epochs  # 500200 batches at bs 64, 117263 images = 273 epochs
     batch_size = opt.batch_size
     weights = opt.weights  # initial training weights
+    # configuration dictionary
+    config = {}
+
+    with open(cfg, 'r') as fs:
+        config = yaml.load(fs, Loader=FullLoader)
+        # log all lightning flags here
+        config = updated_config(config, opt)
 
     train_dataset_cfg = data_cfg.dataset_cfg[data]["train"] # get dataset configuration
     val_dataset_cfg = data_cfg.dataset_cfg[data]["val"]
-    hyp['train_dataset'] = train_dataset_cfg # add dataset configuration to hyper parameters for storage
-    hyp['val_dataset'] = val_dataset_cfg
+    config['train_dataset'] = train_dataset_cfg # add dataset configuration to hyper parameters for storage
+    config['val_dataset'] = val_dataset_cfg
 
     assert train_dataset_cfg['image_size'] == val_dataset_cfg['image_size'], 'image size of train and val dataset must be the same!'
     img_size = train_dataset_cfg['image_size']
 
-    # check image size
-    gs = 32  # (pixels) grid size after down sampling
-    if type(img_size) == int:
-        image_size_x, image_size_y = img_size, img_size
-    else:
-        image_size_x, image_size_y = img_size
-    assert math.fmod(image_size_x, gs) == 0, '--img-size %g must be a %g-multiple' % (image_size_x, gs)
+    # check image size for anchor-based method
+    gs = config['gs'] if 'gs' in config.keys() else -1 # (pixels) grid size after down sampling
+    if gs > 0:
+        if type(img_size) == int:
+            image_size_x, image_size_y = img_size, img_size
+        else:
+            image_size_x, image_size_y = img_size
+        assert math.fmod(image_size_x, gs) == 0, '--img-size %g must be a %g-multiple' % (image_size_x, gs)
 
     nc = int(train_dataset_cfg['classes'])  # number of classes
-    hyp['cls'] *= nc / 80  # update coco-tuned hyp['cls'] to current dataset, 80 is their dataset size
-
+    config['cls'] *= nc # update coco-tuned hyp['cls'] to current dataset, 80 is their dataset size
+    config['nc'] = nc
+ 
     train_dataset =LoadDataset(train_dataset_cfg)
     train_dataloader = torch.utils.data.DataLoader(train_dataset,
                                                     batch_size=batch_size,
@@ -98,7 +89,7 @@ if __name__=='__main__':
         prefix='',
     )
 
-    model = YoloLight(opt, hyp, nc, transfer=opt.freeze)
+    model = create_model(config)
     trainer = pl.Trainer.from_argparse_args(opt, checkpoint_callback=checkpoint_callback, resume_from_checkpoint=opt.ckpt)
 
     print(opt.auto_lr_find)

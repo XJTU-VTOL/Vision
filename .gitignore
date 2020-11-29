@@ -19,11 +19,10 @@
 *.avi
 *.data
 *.json
-core.*
+core*
 
-*.cfg
 *.ckpt
-!cfg/yolov3*.cfg
+!model_cfg/*
 
 storage.googleapis.com
 runs/*

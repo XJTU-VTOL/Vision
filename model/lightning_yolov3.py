@@ -1,51 +1,15 @@
-import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import utils.common_utils as utils
-from torch.utils.data import DataLoader, DistributedSampler
 from utils.common_utils import wh_iou
-from models import Darknet
-import torch.optim.lr_scheduler as lr_sched
-from abc import ABCMeta
+from .yolov3 import Darknet
 import cv2
 import os
 import numpy as np
 import torchvision
 import time
-from utils.common_utils import non_max_suppression, bbox_iou, clip_coords, box_iou
-import math
-
-class ModelBase(pl.LightningModule):
-    def __init__(self, hyper):
-        super(ModelBase, self).__init__()
-        self.hparams = hyper
-        # set the leraning rate attribute to find auto learning rate
-        self.lr = self.hparams["lr0"]
-
-    def configure_optimizers(self):
-        lf = lambda x: (((1 + math.cos(x * math.pi / self.total_epoch)) / 2) ** 1.0) * 0.95 + 0.05  # cosine
-
-        updated_params = []
-        if self.conv_layer_index:
-            for i in self.conv_layer_index:
-                updated_params += list(self.model.module_list[i].parameters())
-        else:
-            updated_params = self.parameters()
-
-        self.optimizer = torch.optim.SGD(
-            updated_params,
-            lr=self.lr,
-            weight_decay=self.hparams["weight_decay"],
-            momentum=self.hparams['momentum']
-        )
-        self.lr_scheduler = lr_sched.LambdaLR(self.optimizer, lr_lambda=lf)
-        return  [self.optimizer], [
-                {
-                 'scheduler': self.lr_scheduler,
-                 'interval': 'epoch',
-                 'frequency': 1,
-                }]
+from .model_base import ModelBase
+from utils.common_utils import bbox_iou, clip_coords, box_iou
 
 def smooth_BCE(eps=0.1):  # https://github.com/ultralytics/yolov3/issues/238#issuecomment-598028441
     # return positive, negative label smoothing BCE targets
@@ -81,14 +45,57 @@ class FocalLoss(nn.Module):
             return loss
 
 class YoloLight(ModelBase):
-    def __init__(self, opt, hyp, nc, gr=1.0, transfer=False):
-        super(YoloLight, self).__init__(hyp)
-        self.model = Darknet(opt.cfg, verbose=True)
-        self.total_epoch = 1 if not hasattr(opt, 'max_epochs') else opt.max_epochs
-        self.model.hyp = hyp
-        self.model.nc = nc
+    def init_config(self):
+        self.default_config = {
+            'name': "Yolo",
+            'cfg': '/opt/data/private/Yolo/VisionPro/model_cfg/yolo_cfg/yolov3.cfg',
+            # grid size 
+            'gr': 1.0,
+
+            # model parameters
+            'giou': 3.54,  # giou loss gain
+            'cls': 37.4,  # cls loss gain
+            'cls_pw': 1.0,  # cls BCELoss positive_weight
+            'obj': 64.3,  # obj loss gain (*=img_size/320 if img_size != 320)
+            'obj_pw': 1.0,  # obj BCELoss positive_weight
+            'iou_t': 0.20,  # iou training threshold
+            'fl_gamma': 0.0,  # focal loss gamma (efficientDet default is gamma=1.5)
+            'conf_thres': 0.5, 
+            'iou_thres': 0.6, 
+            'multi_label': True,
+
+            'training':
+                {
+                    'optimizer':
+                    {
+                        'name': 'SGD',
+                        'lr': 0.001,
+                        'momentum': 0.0001,
+                        'lr_decay': 0.1, 
+                        'weight_decay': 0.0005,
+                        'lrf': 0.00001, # final learning rate (with cos scheduler)
+                    },  
+                    'scheduler':{
+                        'name': 'cosine',
+                        'interval': 'epoch',
+                        'frequency': 1
+                    }
+                }
+        }
+
+    def __init__(self, config):
+        super(YoloLight, self).__init__(config)
+        self.init_config()
+        self.default_config.update(config)
+        self.trainer_flags = self.default_config['trainer']
+        
+        self.model = Darknet(self.default_config['cfg'], verbose=True)
+        self.total_epoch = self.trainer_flags['max_epochs'] if 'max_epochs' in self.trainer_flags.keys() else 1
+        self.default_config['training']['scheduler']['total_epoch'] = self.total_epoch
+        self.model.nc = self.default_config['nc']
         # Giou Loss ratio
-        self.model.gr = gr
+        self.model.gr = self.default_config['gr']
+        self.model.hyp = self.default_config
         # conv layer index before the yolo head (if transfer is set, this will be a list of integer)
         self.conv_layer_index = None
 
@@ -100,12 +107,13 @@ class YoloLight(ModelBase):
         self.seen = 0
 
         # Load initial weights here
-        if opt.weights is not None and os.path.exists(opt.weights):
-            if opt.weights.endswith('.pt'):  # pytorch format
+        weights_file = self.trainer_flags['weights']
+        if weights_file is not None and os.path.exists(weights_file):
+            if weights_file.endswith('.pt'):  # pytorch format
 
-                print("Loading parameters from .pt file :", opt.weights)
+                print("Loading parameters from .pt file :", weights_file)
                 # possible weights are '*.pt', 'yolov3-spp.pt', 'yolov3-tiny.pt' etc.
-                ckpt = torch.load(opt.weights)
+                ckpt = torch.load(weights_file)
 
                 # load model
                 try:
@@ -118,10 +126,11 @@ class YoloLight(ModelBase):
                         "See https://github.com/ultralytics/yolov3/issues/657" % (opt.weights, opt.cfg, opt.weights)
                     raise KeyError(s) from e
             else:
-                print("Loading parameters from .weights file :", opt.weights)
-                self.model.load_darknet_weights(opt.weights)
+                print("Loading parameters from .weights file :", weights_file)
+                self.model.load_darknet_weights(weights_file)
 
         # transfer learning : only requires grad for the last convolution layer parameters
+        transfer = self.trainer_flags['freeze'] if 'freeze' in self.trainer_flags.keys() else False
         if transfer:
             print("freeze layers ...")
             yolo_layer_index = self.model.yolo_layers
@@ -131,6 +140,7 @@ class YoloLight(ModelBase):
                 if i not in self.conv_layer_index:
                     for param in module.parameters():
                         param.requires_grad_(False)
+            self.updated_layer_index  = self.conv_layer_index
 
 
     def compute_loss(self, p, targets):  # predictions, targets, model
@@ -284,7 +294,7 @@ class YoloLight(ModelBase):
                 z = torch.zeros_like(gxy)
 
 ########################################################################################################################################################################
-#               Need to figure out how does the style work ?
+#               Need to figure out how does the style work!
 # 
 # #######################################################################################################################################################################                
                 if style == 'rect2':

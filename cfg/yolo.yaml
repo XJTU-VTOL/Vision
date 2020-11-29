@@ -1,0 +1,35 @@
+# name of the model
+name: YOLO
+# configuration file for the model
+cfg: /opt/data/private/Yolo/VisionPro/model_cfg/yolo_cfg/yolov3.cfg
+# grid size
+gs: 32
+# Giou loss ratio
+gr: 1.0
+
+# model parameters
+giou: 3.54  # giou loss gain
+cls: 37.4  # cls loss gain
+cls_pw: 1.0  # cls BCELoss positive_weight
+obj: 64.3  # obj loss gain (*=img_size/320 if img_size != 320)
+obj_pw: 1.0  # obj BCELoss positive_weight
+iou_t: 0.20  # iou training threshold
+fl_gamma: 0.0  # focal loss gamma (efficientDet default is gamma=1.5)
+conf_thres: 0.5 
+iou_thres: 0.6 
+multi_label: True
+
+training:
+  optimizer:
+    name: SGD
+    lr: 0.001
+    momentum: 0.0001
+    lr_decay: 0.1 
+    weight_decay: 0.0005
+    lrf: 0.00001  # final learning rate (with cos scheduler)
+  scheduler:
+    name: cosine
+    interval: epoch
+    frequency: 1
+  
+  

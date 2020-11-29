@@ -28,6 +28,25 @@ matplotlib.rc('font', **{'size': 11})
 # Prevent OpenCV from multithreading (to use PyTorch DataLoader)
 cv2.setNumThreads(0)
 
+def updated_config(config, opt):
+    """
+    Updated config dictionaries from parser arguments
+
+    Store all the parameters under the `trainer` key
+    config:
+        dictionary (loaded from .yaml file)
+    opt:
+        Argument Parser Object
+    """
+    attr = dir(opt)
+    attr = [a for a in attr if not a.endswith('__') and not a.startswith('__')]
+    trainer = {}
+    for att in attr:
+        value = getattr(opt, att)
+        trainer[att] = value
+    config['trainer'] = trainer
+    return config
+    
 
 def init_seeds(seed=0):
     random.seed(seed)
